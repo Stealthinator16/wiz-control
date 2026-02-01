@@ -2,12 +2,29 @@
 import socket
 import json
 import logging
+import subprocess
+import re
 from typing import List, Tuple, Dict, Optional, Any
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-BROADCAST_ADDRESS = "192.168.87.255"
+def get_broadcast_address() -> str:
+    """Auto-detect the broadcast address from the active network interface."""
+    try:
+        # Get network info from ifconfig
+        result = subprocess.run(['ifconfig'], capture_output=True, text=True)
+        # Find broadcast addresses (prefer en0/en1 for WiFi)
+        matches = re.findall(r'broadcast (\d+\.\d+\.\d+\.\d+)', result.stdout)
+        if matches:
+            logging.info(f"Auto-detected broadcast address: {matches[0]}")
+            return matches[0]
+    except Exception as e:
+        logging.warning(f"Could not auto-detect broadcast: {e}")
+    # Fallback
+    return "255.255.255.255"
+
+BROADCAST_ADDRESS = get_broadcast_address()
 BROADCAST_PORT = 38899
 BUFFER_SIZE = 1024
 
@@ -225,4 +242,16 @@ class WizDiscovery:
             logging.info("Device %s state: %s", ip, state)
             return state
         logging.warning("Could not determine state for %s", ip)
+        return None
+
+    def get_pilot(self, ip: str) -> Optional[Dict]:
+        """
+        Retrieve the full pilot state for a WiZ device (color, brightness, etc).
+
+        :param ip: IP address of the device.
+        :return: Dict with r, g, b, dimming, temp, sceneId etc, or None.
+        """
+        response = self.send_command(ip, "getPilot", {})
+        if response and "result" in response:
+            return response["result"]
         return None

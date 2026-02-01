@@ -1,0 +1,45 @@
+# Build artifacts
+build/
+dist/
+*.spec
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# macOS
+.DS_Store
+*.dmg
+
+# App bundles (generated, not source)
+WizLight.app/
+WizLightLauncher.app/
+AppIcon.iconset/
+
+# Data files (user-specific)
+wiz_data.json
+*.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
