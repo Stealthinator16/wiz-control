@@ -357,6 +357,8 @@ class WizApp(ctk.CTk):
         self.logs = []
         self.is_on = True
         self.music_mode = False
+        self.white_mode = False  # Track if we're in white/temp mode
+        self.current_temp = 4000  # Current temperature when in white mode
         self.visualizer = MusicVisualizer(self._on_music_color)
 
         self._load_data()
@@ -617,28 +619,52 @@ class WizApp(ctk.CTk):
         r, g, b = self.wheel.get_rgb()
         self.hex_lbl.configure(text=f"#{r:02x}{g:02x}{b:02x}".upper())
         if self.current_ip:
-            self._send_color(r, g, b)
+            # If saturation is low, use white mode (much brighter)
+            if s < 0.20:
+                self.white_mode = True
+                self.current_temp = 4000
+                self._send_temp(4000)
+            else:
+                self.white_mode = False  # Switch to RGB mode
+                self._send_color(r, g, b)
 
     def _on_bright(self, v):
         self.brightness = int(v)
         self.bright_lbl.configure(text=f"{self.brightness}%")
         if self.current_ip and not self.music_mode:
-            r, g, b = self.wheel.get_rgb()
-            self._send_color(r, g, b)
+            # Stay in current mode (white or RGB)
+            if self.white_mode:
+                self._send_temp(self.current_temp)
+            else:
+                r, g, b = self.wheel.get_rgb()
+                self._send_color(r, g, b)
 
     def _on_temp(self, v):
         temp = int(v)
         self.temp_lbl.configure(text=f"{temp}K")
         if self.current_ip:
+            self.white_mode = True  # Switch to white mode
+            self.current_temp = temp
             self._send_temp(temp)
 
     def _send_temp(self, temp):
         def do():
             try:
-                self.discovery.set_color_temperature(self.current_ip, temp,
-                                                      dimming=self.brightness, turn_on=True)
-                self._log(f"Temp: {temp}K")
-            except: pass
+                # Force switch to white mode - use c/w for cold/warm white LEDs
+                # Map temp to c/w ratio: 2700K = warm, 6500K = cool
+                ratio = (temp - 2700) / (6500 - 2700)  # 0 = warm, 1 = cool
+                c = int(255 * ratio)  # Cold white
+                w = int(255 * (1 - ratio))  # Warm white
+
+                self.discovery.send_command(self.current_ip, "setPilot", {
+                    "c": c,
+                    "w": w,
+                    "dimming": self.brightness,
+                    "state": True
+                })
+                self._log(f"White mode: c={c} w={w} ({temp}K)")
+            except Exception as e:
+                self._log(f"Error: {e}")
         threading.Thread(target=do, daemon=True).start()
 
     def _send_color(self, r, g, b):
