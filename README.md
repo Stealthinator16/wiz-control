@@ -1,188 +1,120 @@
-# WiZ Smart Bulb Manager
+# WizLight
 
+Music-reactive smart light controller for WiZ bulbs. Sync your lights to music in real time, control them from a minimal GUI, or script them from the command line.
 
-## Table of Contents
+Forked from [Kajsing/wiz-control](https://github.com/Kajsing/wiz-control), which provides the core device discovery, room management, and Tkinter GUI.
 
-- [Introduction](#introduction)
-- [Features](#features)
-- [Installation](#installation)
-  - [Prerequisites](#prerequisites)
-  - [Clone the Repository](#clone-the-repository)
-  - [Set Up a Virtual Environment (Optional but Recommended)](#set-up-a-virtual-environment-optional-but-recommended)
-  - [Install Dependencies](#install-dependencies)
-- [Usage](#usage)
-  - [Running the Application](#running-the-application)
-  - [Using the Application](#using-the-application)
-- [Configuration](#configuration)
-  - [Data File](#data-file)
-- [Architecture Notes](#architecture-notes)
-- [Contributing](#contributing)
-- [License](#license)
-- [Contact](#contact)
+## What's New in This Fork
 
-## Introduction
+### Music Sync
 
-WiZ Smart Bulb Manager is a Python-based graphical user interface (GUI) application that allows you to discover, control, and manage your WiZ smart bulbs on your local network. With this tool, you can easily turn your lights on or off, organize devices by rooms, rename rooms, remove devices, and monitor the status of each bulb in real-time.
+Real-time audio analysis that maps sound to light color and intensity. The system runs FFT on audio input at ~43fps and uses two detection methods:
 
-## Features
+- **Bass energy analysis** (60-150Hz) for kick drum detection
+- **Spectral flux** for onset/transient detection
 
-- **Device Discovery**: Automatically discover WiZ smart bulbs on your local network.
-- **Room Management**: Organize devices by rooms and rename rooms as needed.
-- **Device Control**: Turn individual devices on or off or control all devices within a room simultaneously.
-- **Advanced Color & Brightness**: Adjust brightness, color temperature, and RGB values, or use quick presets stored per bulb.
-- **Room Scenes**: Apply any of the 32 built-in WiZ scenes to an entire room and fine-tune the playback speed.
-- **Remove Devices**: Easily remove devices from the manager.
-- **Real-time Logging**: Monitor actions and device statuses in real-time, with a toggle to hide the log when you need more screen space.
-- **Offline Device Detection**: Identify and display devices that are offline.
-- **Persistent Data**: Save device, room, and per-light preference data for future sessions.
+Detected beats trigger color changes based on the dominant frequency band:
+
+| Frequency Range | Color |
+|---|---|
+| Sub-bass (20-60Hz) | Red |
+| Bass (60-250Hz) | Orange |
+| Low-mid (250-500Hz) | Yellow |
+| Mid (500Hz-2kHz) | Green |
+| Upper-mid (2-4kHz) | Cyan |
+| Presence (4-8kHz) | Blue |
+| Brilliance (8-16kHz) | Magenta |
+
+Between beats, color saturation and brightness decay smoothly. Requires a loopback audio device (BlackHole or Soundflower) to capture system audio.
+
+### Elegant GUI
+
+A second, minimal interface (`wiz_elegant.py`) built with CustomTkinter. Dark mode, interactive HSV color wheel, single-device focus. Stores config in `~/.wizlight/` instead of the repo directory.
+
+### CLI Control
+
+Command-line interface (`wiz_control.py`) for scripting and automation:
+
+```bash
+python3 wiz_control.py on          # Turn on
+python3 wiz_control.py off         # Turn off
+python3 wiz_control.py dim 150     # Set brightness (1-255)
+python3 wiz_control.py color warm  # Named color (red, green, blue, yellow, purple, orange, pink, cyan, warm, cool)
+python3 wiz_control.py rgb 255 0 0 # Custom RGB
+python3 wiz_control.py status      # Show device status
+```
+
+### macOS App Bundle
+
+Packaged as `WizLight.app` via PyInstaller with a one-step installer:
+
+```bash
+bash install.sh
+```
+
+Handles Homebrew portaudio installation, pip dependencies, and copies the app to `/Applications/`.
+
+### Enhanced Discovery
+
+Auto-detection of broadcast address, validated pilot payloads with parameter clamping (dimming 10-100, temperature 1000-10000K), and high-level helper methods (`set_scene()`, `set_color_temperature()`, `set_color()`).
+
+## Three Ways to Use
+
+| Interface | Command | Best For |
+|---|---|---|
+| Elegant GUI | `python3 wiz_elegant.py` | Music sync, minimal single-device control |
+| Full GUI | `python3 wiz_gui.py` | Multi-room management, scenes, presets |
+| CLI | `python3 wiz_control.py <cmd>` | Scripts, automation, quick toggles |
 
 ## Installation
 
 ### Prerequisites
 
-- **Python 3.10+** with Tkinter support. Most desktop Python installers ship with Tkinter, but some Linux distributions split it into a separate package (see below).
-- **Broadcast access** on your local network. The discovery protocol uses UDP broadcasts on port `38899`.
+- Python 3.10+ with Tkinter
+- WiZ bulbs on the same local network (UDP port 38899)
 
-### Clone the Repository
-
-```bash
-git clone https://github.com/Kajsing/wiz-control.git
-cd wiz-smart-bulb-manager
-```
-
-### Set Up a Virtual Environment (Optional but Recommended)
-
-Creating a virtual environment helps manage dependencies and keep your project isolated.
+### Quick Start
 
 ```bash
-python3 -m venv .venv
+git clone https://github.com/Stealthinator16/wiz-control.git
+cd wiz-control
+pip install customtkinter pillow pyaudio numpy pywizlight
+python3 wiz_elegant.py
 ```
 
-Activate the virtual environment:
+### Music Sync Setup
 
-- **On Windows:**
-
-  ```bash
-  .venv\Scripts\activate
-  ```
-
-- **On macOS and Linux:**
-
-  ```bash
-  source .venv/bin/activate
-  ```
-
-### Install Dependencies
-
-This project currently relies only on the Python standard library. If you maintain shared tooling for linting or testing, pin it in `requirements-dev.txt`.
-
-**Tkinter note:** If `tkinter` is missing when you launch the app, install the platform package:
-
-- **Debian/Ubuntu:** `sudo apt-get install python3-tk`
-- **Fedora:** `sudo dnf install python3-tkinter`
-- **Windows/macOS:** bundled with the official Python installers.
-
-## Usage
-
-### Running the Application
-
-To start the WiZ Smart Bulb Manager, navigate to the project directory and run:
+For system audio capture, install a loopback audio device:
 
 ```bash
-python3 wiz_gui.py
+brew install blackhole-2ch
 ```
 
-### Using the Application
+Then set BlackHole as your system output (or use a multi-output device to keep speakers active). The music sync mode will pick up the loopback input automatically.
 
-1. **Discover Devices**: Click **Discover Devices** to broadcast a `getSystemConfig` request and catalog reachable bulbs.
-2. **View Devices**: The control panel groups devices by reported room ID and shows the last known power state.
-3. **Control Devices**:
-   - **Individual Control**: Use **Turn On/Turn Off** next to each entry to toggle that bulb.
-   - **Room Control**: Use **Turn All On/Turn All Off** in the room header to broadcast a state change to every bulb in the group.
-4. **Edit Rooms**: Replace the text in the room header, click **Save Name**, and the label will persist between sessions.
-5. **Adjust Light Output**:
-   - Click **Show Color Controls** on a device to reveal brightness, color temperature, and RGB sliders.
-   - Use **Apply White** for tunable-white devices or **Apply Color** for RGB output. Preset buttons auto-fill the sliders and send the command.
-6. **Apply Room Scenes**: Select a scene from the dropdown in the room header, optionally adjust the speed, and click **Apply Scene** to broadcast the preset to every light in that room.
-7. **Remove Devices**: Select **Remove** to clear an IP from the cache until the next discovery run.
-8. **Monitor Logs**: Click **Show Logs** / **Hide Logs** in the toolbar to toggle the status console (handy on smaller displays).
+### macOS App Install
 
-## Configuration
-
-### Data File
-
-The application writes a `wiz_data.json` file alongside the scripts to remember room labels, device metadata, and the raw discovery payloads (`info`). A typical structure looks like:
-
-```json
-{
-  "rooms": {
-    "1": "Living Room",
-    "2": "Bedroom"
-  },
-  "devices": {
-    "192.168.87.10": {
-      "ip": "192.168.87.10",
-      "moduleName": "Ceiling Lamp",
-      "roomId": "1",
-      "info": { "result": { "moduleName": "Ceiling Lamp", "roomId": 1, "state": true } },
-      "preferences": {
-        "dimming": 75,
-        "temperature": 3200,
-        "r": 0,
-        "g": 0,
-        "b": 0
-      }
-    }
-  },
-  "room_settings": {
-    "1": {
-      "sceneId": 5,
-      "sceneSpeed": 120
-    }
-  }
-}
+```bash
+bash install.sh
 ```
 
-You can safely delete this file to reset the cache—the application will regenerate it on the next launch (room names, preferred light levels, and scene choices will revert to defaults).
+This installs portaudio via Homebrew, pip dependencies, and copies WizLight.app to `/Applications/`.
 
-## Architecture Notes
+## Architecture
 
-- **GUI (`wiz_gui.py`)** manages Tkinter widgets, cached discovery data, and background polling threads. Device state changes update an in-memory cache before triggering lightweight UI refreshes.
-- **Discovery (`wiz_discovery.py`)** encapsulates UDP broadcast discovery, per-device command calls, and room grouping helpers. Network access is deliberately serialized in the status poller to avoid saturating the WiZ protocol.
-- **Contributor Guide**: See [`AGENTS.md`](AGENTS.md) for coding standards, testing guidance, and pull-request expectations tailored to this project.
+| Module | Role |
+|---|---|
+| `wiz_elegant.py` | Minimal GUI + music sync (CustomTkinter, pyaudio, numpy) |
+| `wiz_gui.py` | Full-featured room manager (Tkinter) |
+| `wiz_control.py` | CLI control (pywizlight) |
+| `wiz_discovery.py` | UDP discovery, device commands, payload validation |
 
-## Contributing
+See [AGENTS.md](AGENTS.md) for contributor guidelines.
 
-Contributions are welcome! To contribute to WiZ Smart Bulb Manager:
+## Credits
 
-1. **Fork the Repository**
-
-2. **Create a Feature Branch**
-
-   ```bash
-   git checkout -b feature/YourFeature
-   ```
-
-3. **Commit Your Changes**
-
-   ```bash
-   git commit -m "Add a new feature"
-   ```
-
-4. **Push to the Branch**
-
-   ```bash
-   git push origin feature/YourFeature
-   ```
-
-5. **Open a Pull Request**
-
-Please ensure your code follows the existing style and includes appropriate documentation. Consult [`AGENTS.md`](AGENTS.md) for detailed contributor guidelines.
+Original project by [Kajsing](https://github.com/Kajsing/wiz-control) -- device discovery protocol, room management GUI, scene control, and persistent data storage.
 
 ## License
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
-
-## Contact
-
-For questions or support, open an issue on the GitHub repository or contact [your email](mailto:ckajsing@gmail.com).
+MIT License. See [LICENSE](LICENSE) for details.
