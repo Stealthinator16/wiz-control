@@ -154,7 +154,7 @@ class ColorWheel(ctk.CTkFrame):
 
 
 # ============================================================================
-# MUSIC VISUALIZER
+# MUSIC VISUALIZER - Enhanced Beat Detection
 # ============================================================================
 
 class MusicVisualizer:
@@ -166,10 +166,45 @@ class MusicVisualizer:
         self.stream = None
 
         # Audio settings
-        self.CHUNK = 1024
+        self.CHUNK = 2048  # Smaller for faster response
         self.RATE = 44100
-        self.last_hue = 0
-        self.smoothing = 0.3
+
+        # Color state
+        self.current_hue = 0.0
+        self.current_sat = 0.8
+        self.current_val = 1.0
+
+        # Beat detection state
+        self.bass_history = []      # Rolling history of bass energy
+        self.onset_history = []     # Rolling history of spectral flux
+        self.prev_spectrum = None   # Previous frame's spectrum for flux calc
+        self.last_beat_time = 0     # Time of last detected beat
+        self.beat_intervals = []    # Track intervals between beats for BPM
+        self.min_beat_interval = 0.15  # Minimum 150ms between beats (~180 BPM max)
+
+        # History sizes
+        self.bass_history_size = 43      # ~1 second at 23fps
+        self.onset_history_size = 43
+
+        # Thresholds (tuned for sensitivity)
+        self.bass_threshold_mult = 1.4   # Beat if bass > avg * this
+        self.onset_threshold_mult = 1.5  # Beat if onset > avg * this
+
+        # Frequency bands for color mapping (bin ranges for 2048 samples at 44100Hz)
+        # bin = freq * CHUNK / RATE
+        self.frequency_bands = [
+            (1, 3, 0.0),       # Sub-bass 20-60Hz → red
+            (3, 12, 0.083),    # Bass 60-250Hz → orange
+            (12, 23, 0.167),   # Low-mid 250-500Hz → yellow
+            (23, 93, 0.333),   # Mid 500-2000Hz → green
+            (93, 186, 0.5),    # Upper-mid 2-4kHz → cyan
+            (186, 372, 0.667), # Presence 4-8kHz → blue
+            (372, 743, 0.833)  # Brilliance 8-16kHz → magenta
+        ]
+
+        # Bass range for beat detection (focus on kick drum frequencies 60-150Hz)
+        self.bass_low_bin = 3    # ~60Hz
+        self.bass_high_bin = 7   # ~150Hz
 
     def start(self):
         if not AUDIO_AVAILABLE:
@@ -241,6 +276,15 @@ class MusicVisualizer:
                 p.terminate()
             except: pass
 
+        # Reset state for next session
+        self.bass_history = []
+        self.onset_history = []
+        self.prev_spectrum = None
+        self.beat_intervals = []
+        self.current_hue = 0.0
+        self.current_sat = 0.8
+        self.current_val = 1.0
+
     def _audio_loop(self):
         try:
             self.p = pyaudio.PyAudio()
@@ -281,52 +325,127 @@ class MusicVisualizer:
                     if not self.running:
                         break
 
-                    audio_data = np.frombuffer(data, dtype=np.int16)
+                    now = time.time()
+                    audio_data = np.frombuffer(data, dtype=np.int16).astype(np.float32)
 
-                    # Get frequency spectrum
-                    fft = np.abs(np.fft.fft(audio_data))[:self.CHUNK // 2]
+                    # Normalize audio
+                    audio_data = audio_data / 32768.0
 
-                    # Split into frequency bands
-                    bass = np.mean(fft[2:20])      # Low frequencies
-                    mid = np.mean(fft[20:200])     # Mid frequencies
-                    high = np.mean(fft[200:500])   # High frequencies
+                    # Apply Hanning window for better frequency resolution
+                    windowed = audio_data * np.hanning(len(audio_data))
 
-                    # Normalize
-                    total = bass + mid + high + 1
-                    bass_n = bass / total
-                    mid_n = mid / total
-                    high_n = high / total
+                    # Get frequency spectrum using FFT
+                    spectrum = np.abs(np.fft.rfft(windowed))
 
-                    # Map to hue: bass=red, mid=green, high=blue
-                    if bass_n > mid_n and bass_n > high_n:
-                        hue = 0.0 + (mid_n * 0.15)  # Red-ish
-                    elif mid_n > bass_n and mid_n > high_n:
-                        hue = 0.33 - (bass_n * 0.1)  # Green-ish
-                    elif high_n > bass_n and high_n > mid_n:
-                        hue = 0.66 + (mid_n * 0.1)  # Blue-ish
+                    # ========== BEAT DETECTION ==========
+
+                    # 1. Bass energy detection (kick drum 60-150Hz)
+                    bass_energy = np.sum(spectrum[self.bass_low_bin:self.bass_high_bin] ** 2)
+                    bass_energy = np.sqrt(bass_energy)  # RMS
+
+                    # 2. Spectral flux (onset detection) - measures sudden changes
+                    if self.prev_spectrum is not None:
+                        # Only count positive changes (onsets, not offsets)
+                        flux = np.sum(np.maximum(spectrum - self.prev_spectrum, 0))
                     else:
-                        hue = 0.5  # Cyan when balanced
+                        flux = 0
+                    self.prev_spectrum = spectrum.copy()
 
-                    # Volume-based saturation
-                    volume = np.mean(np.abs(audio_data)) / 32768
-                    sat = min(1.0, volume * 5 + 0.3)
+                    # Update histories
+                    self.bass_history.append(bass_energy)
+                    if len(self.bass_history) > self.bass_history_size:
+                        self.bass_history.pop(0)
 
-                    # Smooth the hue changes
-                    hue = self.last_hue * (1 - self.smoothing) + hue * self.smoothing
-                    self.last_hue = hue
+                    self.onset_history.append(flux)
+                    if len(self.onset_history) > self.onset_history_size:
+                        self.onset_history.pop(0)
 
-                    # Only update if there's significant audio and still running
-                    if volume > 0.01 and self.running:
-                        self.on_color_change(hue, sat)
+                    # Calculate adaptive thresholds
+                    avg_bass = np.mean(self.bass_history) if self.bass_history else bass_energy
+                    avg_onset = np.mean(self.onset_history) if self.onset_history else flux
 
-                    time.sleep(0.05)
+                    # Detect beat using both bass energy AND spectral flux
+                    bass_peak = bass_energy > avg_bass * self.bass_threshold_mult
+                    onset_peak = flux > avg_onset * self.onset_threshold_mult
+
+                    # Time since last beat (enforce minimum interval)
+                    time_since_beat = now - self.last_beat_time
+
+                    # Beat detected if bass OR onset peak, with timing constraint
+                    is_beat = (bass_peak or onset_peak) and time_since_beat > self.min_beat_interval
+
+                    if is_beat:
+                        # Track beat interval for BPM estimation
+                        if self.last_beat_time > 0:
+                            interval = time_since_beat
+                            if 0.25 < interval < 2.0:  # Valid BPM range 30-240
+                                self.beat_intervals.append(interval)
+                                if len(self.beat_intervals) > 8:
+                                    self.beat_intervals.pop(0)
+                        self.last_beat_time = now
+
+                    # ========== COLOR MAPPING ==========
+
+                    # Calculate energy per frequency band
+                    band_energies = []
+                    for low_bin, high_bin, _ in self.frequency_bands:
+                        high_bin = min(high_bin, len(spectrum))
+                        energy = np.sum(spectrum[low_bin:high_bin])
+                        band_energies.append(energy)
+
+                    total_energy = sum(band_energies) + 0.001
+
+                    # Weighted centroid for target hue
+                    target_hue = sum(
+                        energy * band[2]
+                        for energy, band in zip(band_energies, self.frequency_bands)
+                    ) / total_energy
+
+                    # Volume for brightness
+                    volume = np.sqrt(np.mean(audio_data ** 2))  # RMS volume
+
+                    # ========== COLOR OUTPUT ==========
+
+                    if is_beat:
+                        # ON BEAT: Instant jump to new color, full saturation
+                        self.current_hue = target_hue
+                        self.current_sat = 1.0
+                        self.current_val = 1.0
+                    else:
+                        # Between beats: Smooth transition, slight decay
+                        hue_diff = target_hue - self.current_hue
+                        if hue_diff > 0.5:
+                            hue_diff -= 1.0
+                        elif hue_diff < -0.5:
+                            hue_diff += 1.0
+
+                        # Slower smoothing between beats
+                        self.current_hue = (self.current_hue + hue_diff * 0.15) % 1.0
+
+                        # Saturation decay between beats
+                        target_sat = 0.6 + volume * 2.0
+                        target_sat = min(1.0, max(0.5, target_sat))
+                        self.current_sat += (target_sat - self.current_sat) * 0.3
+
+                        # Value based on volume
+                        target_val = 0.7 + volume * 1.5
+                        target_val = min(1.0, max(0.6, target_val))
+                        self.current_val += (target_val - self.current_val) * 0.3
+
+                    # Send color update
+                    if volume > 0.001 and self.running:
+                        self.on_color_change(self.current_hue, self.current_sat)
+
+                    # Fast update rate for responsive beats
+                    time.sleep(0.023)  # ~43 fps
 
                 except OSError:
                     # Stream closed
                     break
-                except Exception:
+                except Exception as e:
                     if not self.running:
                         break
+                    print(f"Audio loop error: {e}")
                     time.sleep(0.1)
 
         except Exception as e:
